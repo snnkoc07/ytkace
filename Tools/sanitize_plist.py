@@ -6,6 +6,7 @@ import sys
 
 
 def enable_file_access(root: dict) -> None:
+    root["MinimumOSVersion"] = "17.0"
     root["UIFileSharingEnabled"] = True
     root["LSSupportsOpeningDocumentsInPlace"] = True
     modes = root.get("UIBackgroundModes")

@@ -69,6 +69,9 @@ static void YTKACEInstallModules(void) {
 __attribute__((constructor))
 static void YTKACEEntryPoint(void) {
     @autoreleasepool {
+        if (![NSProcessInfo.processInfo isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){17, 0, 0}]) {
+            return;
+        }
         YTKACEClearDownloadLog();
         YTKACERegisterDefaults();
         YTKACEScheduleFirstLaunch();

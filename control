@@ -6,6 +6,6 @@ Description: Open-source YouTube enhancement with downloads, SponsorBlock, backg
 Maintainer: itzzace
 Author: itzzace
 Section: Tweaks
-Depends: mobilesubstrate | ellekit, firmware (>= 15.0)
+Depends: mobilesubstrate | ellekit, firmware (>= 17.0)
 Homepage: https://github.com/itzzace/ytkace
 Tag: role::enduser

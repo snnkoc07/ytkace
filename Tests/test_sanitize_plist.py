@@ -40,6 +40,7 @@ class SanitizePlistTests(unittest.TestCase):
         tablet = result["CFBundleIcons~ipad"]["CFBundleAlternateIcons"]
         self.assertEqual(set(phone), {"YTK", "ExampleDark", "ExampleLight", "YouTubeBlue"})
         self.assertEqual(set(tablet), {"ExampleTablet", "YouTubeRed"})
+        self.assertEqual(result["MinimumOSVersion"], "17.0")
         self.assertTrue(result["UIFileSharingEnabled"])
         self.assertTrue(result["LSSupportsOpeningDocumentsInPlace"])
         self.assertIn("audio", result["UIBackgroundModes"])
