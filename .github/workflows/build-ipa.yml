@@ -44,37 +44,7 @@ jobs:
             THEOS_PACKAGE_SCHEME="rootless" \
             DISABLE_ROOTLESS_COMPAT_WARNING=1
 
-      - name: Name package
-        id: name
-        run: |
-          deb="$(ls packages/*.deb | head -1)"
-          version="$(awk '/^Version:/ {print $2}' control)"
-          output="com.itzzace.ytkace_${version}_rootless.deb"
-          mkdir -p artifacts
-          cp "$deb" "artifacts/$output"
-          echo "deb=artifacts/$output" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: YTKACE-deb-rootless
-          path: ${{ steps.name.outputs.deb }}
-          if-no-files-found: error
-
-  package:
-    needs: build
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: YTKACE-deb-rootless
-          path: packages
-
       - uses: levibostian/action-hide-sensitive-inputs@v1
-
-      - name: Setup
-        run: brew install ldid dpkg
 
       - name: YouTube
         env:
@@ -99,7 +69,7 @@ jobs:
         run: |
           mkdir deb-root
           dpkg-deb -x packages/*.deb deb-root
-          export LDID="$(brew --prefix)/bin/ldid"
+          export LDID="$THEOS/toolchain/linux/iphone/bin/ldid"
           tweak_version="$(awk '/^Version:/ {print $2}' control)"
           youtube_version="$(python3 - <<'PY'
           import plistlib
