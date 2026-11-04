@@ -5,6 +5,7 @@
 #import "DownloadLog.h"
 
 #import <UIKit/UIKit.h>
+#import <UserNotifications/UserNotifications.h>
 #import <math.h>
 
 @interface YTKACEDownloadProgressItem : NSObject
@@ -19,6 +20,7 @@
 @property(nonatomic, assign) int64_t lastSampleBytes;
 @property(nonatomic, assign) NSTimeInterval lastSampleTime;
 @property(nonatomic, assign) double bytesPerSecond;
+@property(nonatomic, assign) NSTimeInterval lastNotificationTime;
 @property(nonatomic, assign) BOOL paused;
 @property(nonatomic, assign) BOOL queued;
 @property(nonatomic, assign) BOOL failed;
@@ -324,7 +326,7 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
     NSString *summary = [count stringByReplacingOccurrencesOfString:@"  •  " withString:@""];
     NSMutableArray<NSString *> *details = [NSMutableArray array];
     if (detail.length != 0) [details addObject:detail];
-    if (!item.paused && !item.queued && !item.failed && item.bytesPerSecond > 1024.0) {
+    if (!item.paused && !item.queued && !item.failed && item.bytesPerSecond > 0.0) {
         NSString *speed = [NSString stringWithFormat:@"%@/s",
             [NSByteCountFormatter stringFromByteCount:(long long)item.bytesPerSecond
                 countStyle:NSByteCountFormatterCountStyleFile]];
@@ -380,6 +382,96 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
 
 - (void)postChange {
     [NSNotificationCenter.defaultCenter postNotificationName:YTKACEDownloadJobsDidChangeNotification object:self];
+}
+
+- (BOOL)notificationsEnabled {
+    id value = [NSUserDefaults.standardUserDefaults
+        objectForKey:@"YTKACE.Preference.Downloads.Notifications"];
+    return value == nil ? YES : [value boolValue];
+}
+
+- (NSString *)notificationRequestIdentifierForJob:(NSString *)identifier {
+    return [NSString stringWithFormat:@"ytkace.download.%@", identifier ?: @"default"];
+}
+
+- (void)removeSystemNotificationForJob:(NSString *)identifier {
+    if (identifier.length == 0) return;
+    NSString *reqID = [self notificationRequestIdentifierForJob:identifier];
+    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    [center removePendingNotificationRequestsWithIdentifiers:@[reqID]];
+    [center removeDeliveredNotificationsWithIdentifiers:@[reqID]];
+}
+
+- (void)updateSystemNotificationForItem:(YTKACEDownloadProgressItem *)item
+                                  force:(BOOL)force
+                               finished:(BOOL)finished {
+    if (item == nil || item.identifier.length == 0) return;
+    if (![self notificationsEnabled]) {
+        [self removeSystemNotificationForJob:item.identifier];
+        return;
+    }
+    NSTimeInterval now = CFAbsoluteTimeGetCurrent();
+    if (!force && !finished && (now - item.lastNotificationTime) < 1.0) {
+        return;
+    }
+    item.lastNotificationTime = now;
+
+    static dispatch_once_t authOnce;
+    dispatch_once(&authOnce, ^{
+        UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+        [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+                              completionHandler:^(__unused BOOL granted, __unused NSError *error) {}];
+    });
+
+    double clampedProgress = isfinite(item.progress)
+        ? MIN(MAX(item.progress, 0.0), 1.0) : 0.0;
+    NSString *percentText = [NSString stringWithFormat:@"%.0f%%", clampedProgress * 100.0];
+    NSString *stageText = item.stage ?: YTKACELocalized(@"Downloading");
+    if (item.paused) stageText = YTKACELocalized(@"Paused");
+    else if (item.queued) stageText = YTKACELocalized(@"Queued");
+
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    if (!item.failed) {
+        [parts addObject:percentText];
+    }
+    if (!item.paused && !item.queued && !item.failed && !finished && item.bytesPerSecond > 0.0) {
+        NSString *speed = [NSString stringWithFormat:@"%@/s",
+            [NSByteCountFormatter stringFromByteCount:(long long)item.bytesPerSecond
+                countStyle:NSByteCountFormatterCountStyleFile]];
+        [parts addObject:speed];
+    }
+    if (!item.failed && item.downloadedBytes > 0) {
+        NSString *done = [NSByteCountFormatter stringFromByteCount:item.downloadedBytes
+            countStyle:NSByteCountFormatterCountStyleFile];
+        if (item.totalBytes > 0) {
+            NSString *total = [NSByteCountFormatter stringFromByteCount:item.totalBytes
+                countStyle:NSByteCountFormatterCountStyleFile];
+            [parts addObject:[NSString stringWithFormat:@"%@ / %@", done, total]];
+        } else {
+            [parts addObject:done];
+        }
+    }
+    if (item.failed && item.detail.length != 0) {
+        [parts addObject:item.detail];
+    }
+
+    UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+    content.title = item.title.length != 0 ? item.title : YTKACELocalized(@"YouTube Download");
+    content.subtitle = stageText;
+    content.body = parts.count != 0 ? [parts componentsJoinedByString:@" · "] : stageText;
+    content.threadIdentifier = @"ytkace.downloads";
+    if (@available(iOS 15.0, *)) {
+        content.interruptionLevel = finished
+            ? UNNotificationInterruptionLevelActive
+            : UNNotificationInterruptionLevelPassive;
+    }
+    content.sound = nil;
+
+    NSString *reqID = [self notificationRequestIdentifierForJob:item.identifier];
+    UNNotificationRequest *request = [UNNotificationRequest
+        requestWithIdentifier:reqID content:content trigger:nil];
+    [UNUserNotificationCenter.currentNotificationCenter
+        addNotificationRequest:request withCompletionHandler:nil];
 }
 
 - (NSArray<NSDictionary *> *)jobSnapshot {
@@ -442,6 +534,7 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
     if (item == nil) return;
     YTKACEDownloadLog(identifier, @"user %@ stage=%@", item.failed ? @"dismissed" : @"cancelled", item.stage);
     if (item.failed) {
+        [self removeSystemNotificationForJob:identifier];
         [self removeItem:identifier];
     } else if (self.cancelHandler != nil) {
         self.cancelHandler(identifier);
@@ -451,6 +544,7 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
 - (void)retryJob:(NSString *)identifier {
     YTKACEDownloadProgressItem *item = self.items[identifier];
     if (item == nil || !item.failed || self.retryHandler == nil) return;
+    [self removeSystemNotificationForJob:identifier];
     [self removeItem:identifier];
     self.retryHandler(identifier);
 }
@@ -472,6 +566,7 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
         item.paused = paused;
         if (paused) item.bytesPerSecond = 0.0;
         if ([self.visibleIdentifier isEqualToString:identifier]) [self renderItem:item];
+        [self updateSystemNotificationForItem:item force:YES finished:NO];
         [self postChange];
     });
 }
@@ -486,6 +581,7 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
             item.bytesPerSecond = 0.0;
         }
         if ([self.visibleIdentifier isEqualToString:identifier]) [self renderItem:item];
+        [self updateSystemNotificationForItem:item force:YES finished:NO];
         [self postChange];
     });
 }
@@ -553,6 +649,7 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
         [self renderItem:item];
         [self layoutCard];
         [self loadThumbnailForItem:item];
+        [self updateSystemNotificationForItem:item force:YES finished:NO];
         [self postChange];
     });
 }
@@ -589,6 +686,7 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
         item.downloadedBytes = sameStage ? MAX(item.downloadedBytes, nextBytes) : nextBytes;
         item.totalBytes = MAX(totalBytes, 0);
         if ([self.visibleIdentifier isEqualToString:identifier]) [self renderItem:item];
+        [self updateSystemNotificationForItem:item force:!sameStage finished:NO];
         [self postChange];
     });
 }
@@ -603,8 +701,14 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
         item.stage = success ? YTKACELocalized(@"Complete")
             : (cancelled ? YTKACELocalized(@"Cancelled") : YTKACELocalized(@"Failed"));
         item.failed = !success && !cancelled;
+        item.bytesPerSecond = 0.0;
         if (item.failed && message.length != 0 && ![message isEqualToString:YTKACELocalized(@"Failed")]) item.detail = message;
         item.progress = success ? 1.0 : item.progress;
+        if (cancelled) {
+            [self removeSystemNotificationForJob:identifier];
+        } else {
+            [self updateSystemNotificationForItem:item force:YES finished:YES];
+        }
         if (item.failed) {
             YTKACEDownloadLog(identifier, @"kept failed job on card detail=%@", item.detail ?: @"");
             self.visibleIdentifier = identifier;

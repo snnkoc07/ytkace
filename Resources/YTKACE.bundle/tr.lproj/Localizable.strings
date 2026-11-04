@@ -1075,4 +1075,16 @@ CC BY-NC-SA 4.0 ile lisanslanmıştır.";
 "Splits direct downloads into parallel chunks for faster speed." = "Doğrudan indirmeleri daha yüksek hız için paralel parçalara böler.";
 "Background Downloading" = "Arka Planda İndirme";
 "Keep downloads running at full speed when YouTube is in the background." = "YouTube arka plandayken indirmelerin tam hızda devam etmesini sağlar.";
+"Default Video Quality" = "Varsayılan Video Kalitesi";
+"Automatically downloads with the selected quality and original audio without asking." = "Seçilen kalitede ve orijinal ses dilinde sormadan otomatik olarak indirir.";
+"Download Notifications" = "İndirme Bildirimleri";
+"Show download percentage and speed in notifications." = "Bildirimler bölümünde indirme yüzdesini ve hızını gösterir.";
+"2160p (4K)" = "2160p (4K)";
+"1440p (2K)" = "1440p (2K)";
+"1080p" = "1080p";
+"720p" = "720p";
+"480p" = "480p";
+"360p" = "360p";
+"240p" = "240p";
+"144p" = "144p";
 

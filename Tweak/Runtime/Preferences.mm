@@ -141,6 +141,8 @@ void YTKACERegisterDefaults(void) {
         @"YTKACE.Preference.SponsorBlock.SkipAlertSeconds": @4.0,
         @"YTKACE.Preference.SponsorBlock.UnskipAlertSeconds": @4.0,
         @"YTKACE.Preference.Downloads.ClearOnStartup": @NO,
+        @"YTKACE.Preference.Downloads.DefaultQuality": @0,
+        @"YTKACE.Preference.Downloads.Notifications": @YES,
         @"YTKACE.Preference.Downloads.MaxConcurrent": @2,
         @"YTKACE.Preference.Downloads.Connections": @4,
         @"YTKACE.Preference.Downloads.BackgroundKeepAlive": @YES,

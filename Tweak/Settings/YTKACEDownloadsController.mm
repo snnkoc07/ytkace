@@ -466,7 +466,7 @@ static void YTKACESaveVideoToPhotos(NSURL *url) {
                 [NSByteCountFormatter stringFromByteCount:done countStyle:NSByteCountFormatterCountStyleFile],
                 [NSByteCountFormatter stringFromByteCount:total countStyle:NSByteCountFormatterCountStyleFile]];
         }
-        if (!paused && !queued && speed > 1024.0) {
+        if (!paused && !queued && speed > 0.0) {
             status = [NSString stringWithFormat:@"%@ · %@/s", status,
                 [NSByteCountFormatter stringFromByteCount:(long long)speed countStyle:NSByteCountFormatterCountStyleFile]];
         }

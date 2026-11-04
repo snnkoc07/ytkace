@@ -946,9 +946,12 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
 
     __weak YTKACEDownloadCoordinator *weakSelf = self;
     UIImage *chevron = [self menuIcon:@"chevron.right"];
+    BOOL asksDestination = [NSUserDefaults.standardUserDefaults
+        integerForKey:YTKACESaveLocationKey] == 2;
+    UIImage *videoChevron = ([self defaultVideoQuality] > 0 && !asksDestination) ? nil : chevron;
     NSArray *actions = @[
         [self sheetAction:YTKACELocalized(@"Download Video") icon:@"play"
-            secondary:chevron handler:^{
+            secondary:videoChevron handler:^{
                 [weakSelf resolveSaveDestinationFromView:anchor then:^{
                     [weakSelf startVideoDownloadForCategory:@"Video"];
                 }];
@@ -1267,6 +1270,9 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
     self.downloadSourceView = sourceView;
     __weak YTKACEDownloadCoordinator *weakSelf = self;
     UIImage *chevron = [self menuIcon:@"chevron.right"];
+    BOOL asksDestination = [NSUserDefaults.standardUserDefaults
+        integerForKey:YTKACESaveLocationKey] == 2;
+    UIImage *videoChevron = ([self defaultVideoQuality] > 0 && !asksDestination) ? nil : chevron;
     BOOL autoSkip = YTKACEFeatureEnabled(@"autoSkipShorts");
     UIViewController *shortsController = [self shortsControllerFromView:sourceView];
     BOOL fullscreen = shortsController != nil
@@ -1278,7 +1284,7 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
         : @"arrow.up.left.and.arrow.down.right";
     NSArray *actions = @[
         [self sheetAction:YTKACELocalized(@"Download Video") icon:@"play"
-            secondary:chevron handler:^{
+            secondary:videoChevron handler:^{
                 [weakSelf resolveSaveDestinationFromView:sourceView then:^{
                     [weakSelf startVideoDownloadForCategory:@"Shorts"];
                 }];
@@ -1445,7 +1451,12 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
             countStyle:NSByteCountFormatterCountStyleFile] : YTKACELocalized(@"Unknown size");
 }
 
-- (void)presentDirectVideoMenuForCategory:(NSString *)category {
+- (NSInteger)defaultVideoQuality {
+    return [NSUserDefaults.standardUserDefaults
+        integerForKey:@"YTKACE.Preference.Downloads.DefaultQuality"];
+}
+
+- (NSArray<YTKACEStreamOption *> *)sortedDirectVideoOptions {
     NSArray<NSString *> *codecOrder = @[@"H.264", @"VP9", @"AV1"];
     NSMutableArray<YTKACEStreamOption *> *videos = [NSMutableArray array];
     BOOL vp9 = VTIsHardwareDecodeSupported('vp09');
@@ -1470,6 +1481,45 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
         return leftCodec < rightCodec ? NSOrderedAscending :
             (leftCodec > rightCodec ? NSOrderedDescending : NSOrderedSame);
     }];
+    return videos;
+}
+
+- (NSArray<YTKACEStreamOption *> *)sortedDirectAudioOptions {
+    NSMutableArray<YTKACEStreamOption *> *audios = [NSMutableArray array];
+    for (YTKACEStreamOption *option in self.directOptions) {
+        if (option.audioOnly) [audios addObject:option];
+    }
+    [audios sortUsingComparator:^NSComparisonResult(YTKACEStreamOption *left,
+                                                    YTKACEStreamOption *right) {
+        if (left.isDefaultAudio != right.isDefaultAudio) {
+            return left.isDefaultAudio ? NSOrderedAscending : NSOrderedDescending;
+        }
+        NSComparisonResult language = [left.languageLabel compare:right.languageLabel];
+        if (language != NSOrderedSame) return language;
+        BOOL leftStable = [self isStableVolumeOption:left];
+        BOOL rightStable = [self isStableVolumeOption:right];
+        if (leftStable != rightStable) return leftStable ? NSOrderedDescending : NSOrderedAscending;
+        return left.bitrate > right.bitrate ? NSOrderedAscending : NSOrderedDescending;
+    }];
+    return audios;
+}
+
+- (YTKACEStreamOption *)selectVideoOptionFromOptions:(NSArray<YTKACEStreamOption *> *)options
+                                       targetQuality:(NSInteger)targetQuality {
+    if (options.count == 0) return nil;
+    if (targetQuality <= 0 || targetQuality >= 9999) {
+        return options.firstObject;
+    }
+    for (YTKACEStreamOption *option in options) {
+        if (option.height <= targetQuality) {
+            return option;
+        }
+    }
+    return options.lastObject ?: options.firstObject;
+}
+
+- (void)presentDirectVideoMenuForCategory:(NSString *)category {
+    NSArray<YTKACEStreamOption *> *videos = [self sortedDirectVideoOptions];
     __weak YTKACEDownloadCoordinator *weakSelf = self;
     NSMutableArray *actions = [NSMutableArray array];
     for (YTKACEStreamOption *option in videos) {
@@ -1492,22 +1542,7 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
 - (void)presentDirectAudioMenuForVideo:(YTKACEStreamOption *)videoOption
                              audioOnly:(BOOL)audioOnly
                               category:(NSString *)category {
-    NSMutableArray<YTKACEStreamOption *> *audios = [NSMutableArray array];
-    for (YTKACEStreamOption *option in self.directOptions) {
-        if (option.audioOnly) [audios addObject:option];
-    }
-    [audios sortUsingComparator:^NSComparisonResult(YTKACEStreamOption *left,
-                                                    YTKACEStreamOption *right) {
-        if (left.isDefaultAudio != right.isDefaultAudio) {
-            return left.isDefaultAudio ? NSOrderedAscending : NSOrderedDescending;
-        }
-        NSComparisonResult language = [left.languageLabel compare:right.languageLabel];
-        if (language != NSOrderedSame) return language;
-        BOOL leftStable = [self isStableVolumeOption:left];
-        BOOL rightStable = [self isStableVolumeOption:right];
-        if (leftStable != rightStable) return leftStable ? NSOrderedDescending : NSOrderedAscending;
-        return left.bitrate > right.bitrate ? NSOrderedAscending : NSOrderedDescending;
-    }];
+    NSArray<YTKACEStreamOption *> *audios = [self sortedDirectAudioOptions];
     __weak YTKACEDownloadCoordinator *weakSelf = self;
     NSMutableArray *actions = [NSMutableArray array];
     for (YTKACEStreamOption *option in audios) {
@@ -1555,6 +1590,49 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
     __weak YTKACEDownloadCoordinator *weakSelf = self;
     if ([self loadDirectOptionsThen:^{ [weakSelf startVideoDownloadForCategory:category]; }]) {
         return;
+    }
+    NSInteger defaultQuality = [self defaultVideoQuality];
+    if (defaultQuality > 0) {
+        if (self.directOptions.count != 0) {
+            NSArray<YTKACEStreamOption *> *videos = [self sortedDirectVideoOptions];
+            YTKACEStreamOption *selectedVideo = [self selectVideoOptionFromOptions:videos
+                                                                     targetQuality:defaultQuality];
+            NSArray<YTKACEStreamOption *> *audios = [self sortedDirectAudioOptions];
+            YTKACEStreamOption *selectedAudio = audios.firstObject;
+            if (selectedAudio == nil) {
+                selectedAudio = [YTKACEStreamResolver
+                    audioOptionsFromPlayerResponse:self.playerResponse].firstObject;
+                if (selectedAudio != nil) {
+                    self.forceSABRNext = YES;
+                }
+            }
+            if (selectedVideo != nil && selectedAudio != nil) {
+                YTKACEDownloadLog(@"resolver",
+                    @"auto-selected direct quality=%ldp (target=%ld) audio=%@ default=%d",
+                    (long)selectedVideo.height, (long)defaultQuality,
+                    selectedAudio.languageLabel ?: @"", selectedAudio.isDefaultAudio);
+                [self beginSABRDownloadVideo:selectedVideo audio:selectedAudio
+                                   audioOnly:NO category:category];
+                return;
+            }
+        } else {
+            NSArray<YTKACEStreamOption *> *videos =
+                [YTKACEStreamResolver videoOptionsFromPlayerResponse:self.playerResponse];
+            NSArray<YTKACEStreamOption *> *audios =
+                [YTKACEStreamResolver audioOptionsFromPlayerResponse:self.playerResponse];
+            YTKACEStreamOption *selectedVideo = [self selectVideoOptionFromOptions:videos
+                                                                     targetQuality:defaultQuality];
+            YTKACEStreamOption *selectedAudio = audios.firstObject;
+            if (selectedVideo != nil && selectedAudio != nil) {
+                YTKACEDownloadLog(@"resolver",
+                    @"auto-selected sabr quality=%ldp (target=%ld) audio=%@ default=%d",
+                    (long)selectedVideo.height, (long)defaultQuality,
+                    selectedAudio.languageLabel ?: @"", selectedAudio.isDefaultAudio);
+                [self beginSABRDownloadVideo:selectedVideo audio:selectedAudio
+                                   audioOnly:NO category:category];
+                return;
+            }
+        }
     }
     if (self.directOptions.count != 0) {
         [self presentDirectVideoMenuForCategory:category];
