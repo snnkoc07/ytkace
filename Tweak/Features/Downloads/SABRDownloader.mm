@@ -628,7 +628,11 @@ static NSData *YTKACESABRClientInfo(void) {
 @property(nonatomic, assign) BOOL triedTVClient;
 @property(nonatomic, assign) NSInteger tvRefreshCount;
 @property(nonatomic, assign) NSInteger nativeBuildFailures;
+@property(nonatomic, assign) BOOL paused;
+@property(nonatomic, strong, nullable) NSURLSessionDataTask *activeTask;
 - (void)start;
+- (void)pause;
+- (void)resume;
 - (void)cancel;
 - (void)sendPreparedRequest:(NSURLRequest * _Nullable)nativeRequest
         nativeRequestNumber:(NSInteger)nativeRequestNumber;
@@ -1002,7 +1006,7 @@ NSUInteger YTKACEPurgeDownloadScratch(BOOL includeActive) {
 }
 
 - (void)sendRequest {
-    if (self.finished || self.requestBuildInFlight) return;
+    if (self.finished || self.paused || self.requestBuildInFlight) return;
     if (self.requestNumber > 10000) {
         [self fail:[self error:@"The SABR stream did not finish." code:3]];
         return;
@@ -1012,7 +1016,7 @@ NSUInteger YTKACEPurgeDownloadScratch(BOOL includeActive) {
 
 - (void)sendPreparedRequest:(NSURLRequest *)nativeRequest
         nativeRequestNumber:(NSInteger)nativeRequestNumber {
-    if (self.finished) return;
+    if (self.finished || self.paused) return;
     (void)nativeRequest;
     (void)nativeRequestNumber;
     NSInteger logicalRequestNumber = self.requestNumber;
@@ -1065,6 +1069,7 @@ NSUInteger YTKACEPurgeDownloadScratch(BOOL includeActive) {
     task.taskDescription = [NSString stringWithFormat:@"%ld",
         (long)logicalRequestNumber];
     task.priority = NSURLSessionTaskPriorityHigh;
+    self.activeTask = task;
     [task resume];
 }
 
@@ -1307,7 +1312,7 @@ NSUInteger YTKACEPurgeDownloadScratch(BOOL includeActive) {
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task
  didCompleteWithError:(NSError *)error {
     (void)session;
-    if (self.finished || task.taskDescription.integerValue != self.activeRequestNumber) return;
+    if (self.finished || self.paused || task.taskDescription.integerValue != self.activeRequestNumber) return;
     NSData *data = [self.activeResponseData copy];
     NSHTTPURLResponse *http = self.activeResponse ?: (NSHTTPURLResponse *)task.response;
     NSTimeInterval elapsed = MAX(NSDate.date.timeIntervalSinceReferenceDate -
@@ -1828,8 +1833,27 @@ NSUInteger YTKACEPurgeDownloadScratch(BOOL includeActive) {
     dispatch_async(dispatch_get_main_queue(), ^{ self.completion(nil, nil, error); });
 }
 
+- (void)pause {
+    if (self.finished || self.paused) return;
+    self.paused = YES;
+    [self.activeTask cancel];
+    self.activeTask = nil;
+    [self.headers removeAllObjects];
+}
+
+- (void)resume {
+    if (self.finished || !self.paused) return;
+    self.paused = NO;
+    self.stalledRequests = 0;
+    self.retryCount = 0;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        [self sendRequest];
+    });
+}
+
 - (void)cancel {
     if (self.finished) return;
+    self.paused = NO;
     NSError *error = [NSError errorWithDomain:NSURLErrorDomain
         code:NSURLErrorCancelled userInfo:@{
             NSLocalizedDescriptionKey: @"Download cancelled"
@@ -1840,12 +1864,26 @@ NSUInteger YTKACEPurgeDownloadScratch(BOOL includeActive) {
 @end
 
 @interface YTKACESABRTask ()
+@property(atomic, assign, readwrite) BOOL paused;
+@property(nonatomic, copy) dispatch_block_t pauseBlock;
+@property(nonatomic, copy) dispatch_block_t resumeBlock;
 @property(nonatomic, copy) dispatch_block_t cancelBlock;
 @end
 
 @implementation YTKACESABRTask
 
+- (void)pause {
+    self.paused = YES;
+    if (self.pauseBlock != nil) self.pauseBlock();
+}
+
+- (void)resume {
+    self.paused = NO;
+    if (self.resumeBlock != nil) self.resumeBlock();
+}
+
 - (void)cancel {
+    self.paused = NO;
     if (self.cancelBlock != nil) self.cancelBlock();
 }
 
@@ -1875,6 +1913,8 @@ NSUInteger YTKACEPurgeDownloadScratch(BOOL includeActive) {
     session.progress = progress;
     session.completion = completion;
     __weak YTKACESABRSession *weakSession = session;
+    task.pauseBlock = ^{ [weakSession pause]; };
+    task.resumeBlock = ^{ [weakSession resume]; };
     task.cancelBlock = ^{ [weakSession cancel]; };
     objc_setAssociatedObject(session, @selector(start), session, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     YTKACESABRCompletion original = [completion copy];
@@ -1882,6 +1922,8 @@ NSUInteger YTKACEPurgeDownloadScratch(BOOL includeActive) {
     session.completion = ^(NSURL *videoURL, NSURL *audioURL, NSError *error) {
         YTKACESABRSetStandaloneClient(identifier, nil, nil);
         original(videoURL, audioURL, error);
+        weakTask.pauseBlock = nil;
+        weakTask.resumeBlock = nil;
         weakTask.cancelBlock = nil;
         YTKACESABRSession *strongSession = weakSession;
         objc_setAssociatedObject(strongSession, @selector(start), nil,

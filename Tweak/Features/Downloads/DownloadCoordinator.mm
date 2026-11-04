@@ -17,6 +17,8 @@
 #import "../../UI/Notice.h"
 
 #import <AVKit/AVKit.h>
+#import <AVFoundation/AVFoundation.h>
+#import <AudioToolbox/AudioToolbox.h>
 #import <UIKit/UIKit.h>
 #import <Photos/Photos.h>
 #import <objc/message.h>
@@ -39,6 +41,9 @@
 @property(nonatomic, strong) YTKACEStreamOption *audioOption;
 @property(nonatomic, assign) BOOL audioOnly;
 @property(nonatomic, assign) BOOL cancelled;
+@property(nonatomic, assign) BOOL paused;
+@property(nonatomic, assign) BOOL queued;
+@property(nonatomic, assign) BOOL started;
 @property(nonatomic, assign) NSInteger fallbackCount;
 @property(nonatomic, assign) int64_t audioBytes;
 @property(nonatomic, assign) int64_t videoBytes;
@@ -198,7 +203,11 @@ void YTKACESetShortsNewFullscreen(UIView *container, BOOL fullscreen) {
 @property(nonatomic, strong) NSURLSession *session;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, YTKACEDownloadJob *> *jobs;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, YTKACEDownloadJob *> *activeJobs;
+@property(nonatomic, strong) NSMutableArray<NSString *> *jobOrder;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, YTKACEDownloadJob *> *retryableJobs;
+@property(nonatomic, assign) UIBackgroundTaskIdentifier backgroundTaskID;
+@property(nonatomic, strong, nullable) AVAudioEngine *keepAliveEngine;
+@property(nonatomic, strong, nullable) AVAudioPlayerNode *keepAlivePlayer;
 @property(nonatomic, weak) UIView *downloadSourceView;
 @property(nonatomic, strong, nullable) id externalResponse;
 @property(nonatomic, weak) UIView *externalSourceView;
@@ -228,6 +237,7 @@ void YTKACESetShortsNewFullscreen(UIView *container, BOOL fullscreen) {
 - (void)saveCompletedURL:(NSURL *)URL job:(YTKACEDownloadJob *)job
                 extension:(NSString *)extension;
 - (void)startSABRJob:(YTKACEDownloadJob *)job;
+- (void)startDirectJob:(YTKACEDownloadJob *)job;
 - (nullable YTKACEStreamOption *)fallbackVideoForJob:(YTKACEDownloadJob *)job;
 - (NSString *)safeFilename:(NSString *)filename;
 - (NSString *)failureMessageForError:(nullable NSError *)error
@@ -315,6 +325,8 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
     if (self) {
         _jobs = [NSMutableDictionary dictionary];
         _activeJobs = [NSMutableDictionary dictionary];
+        _jobOrder = [NSMutableArray array];
+        _backgroundTaskID = UIBackgroundTaskInvalid;
         NSURLSessionConfiguration *configuration =
             NSURLSessionConfiguration.defaultSessionConfiguration;
         configuration.timeoutIntervalForRequest = 30.0;
@@ -328,13 +340,19 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
         YTKACEDownloadProgressView.sharedView.retryHandler = ^(NSString *identifier) {
             [weakSelf retryJobWithIdentifier:identifier];
         };
+        YTKACEDownloadProgressView.sharedView.pauseHandler = ^(NSString *identifier) {
+            [weakSelf togglePauseJobWithIdentifier:identifier];
+        };
+        YTKACEDownloadProgressView.sharedView.moveHandler = ^(NSString *identifier, NSInteger delta) {
+            [weakSelf moveJobWithIdentifier:identifier delta:delta];
+        };
         YTKACEDownloadProgressView.sharedView.cancelHandler = ^(NSString *identifier) {
             YTKACEDownloadJob *job = weakSelf.activeJobs[identifier];
             if (job != nil && job.sabrTask == nil && job.task == nil && job.directTask == nil) {
                 job.cancelled = YES;
                 [YTKACEDownloadProgressView.sharedView finishJob:identifier
                     success:NO message:YTKACELocalized(@"Cancelled")];
-                [weakSelf.activeJobs removeObjectForKey:identifier];
+                [weakSelf removeActiveJobWithIdentifier:identifier];
                 YTKACEDownloadLog(identifier, @"cancelled before start");
                 return;
             }
@@ -344,6 +362,186 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
         };
     }
     return self;
+}
+
+- (NSUInteger)maxConcurrentDownloads {
+    id stored = YTKACEPreferenceObject(@"YTKACE.Preference.Downloads.MaxConcurrent");
+    if ([stored respondsToSelector:@selector(integerValue)]) {
+        NSInteger val = [stored integerValue];
+        if (val >= 1 && val <= 10) return (NSUInteger)val;
+    }
+    return 2;
+}
+
+- (NSUInteger)runningJobCount {
+    NSUInteger count = 0;
+    for (NSString *identifier in self.jobOrder) {
+        YTKACEDownloadJob *job = self.activeJobs[identifier];
+        if (job != nil && job.started && !job.paused && !job.cancelled) {
+            count++;
+        }
+    }
+    return count;
+}
+
+- (void)updateBackgroundKeepAlive {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BOOL hasRunning = [self runningJobCount] > 0;
+        BOOL keepAlivePref = YTKACEPreferenceObject(@"YTKACE.Preference.Downloads.BackgroundKeepAlive") == nil
+            ? YES : YTKACEFeatureEnabled(@"YTKACE.Preference.Downloads.BackgroundKeepAlive");
+        if (hasRunning && keepAlivePref) {
+            if (self.backgroundTaskID == UIBackgroundTaskInvalid) {
+                __weak YTKACEDownloadCoordinator *weakSelf = self;
+                self.backgroundTaskID = [UIApplication.sharedApplication
+                    beginBackgroundTaskWithName:@"YTKACEDownloads"
+                    expirationHandler:^{
+                        YTKACEDownloadCoordinator *strongSelf = weakSelf;
+                        if (strongSelf == nil) return;
+                        if (strongSelf.backgroundTaskID != UIBackgroundTaskInvalid) {
+                            [UIApplication.sharedApplication endBackgroundTask:strongSelf.backgroundTaskID];
+                            strongSelf.backgroundTaskID = UIBackgroundTaskInvalid;
+                        }
+                    }];
+            }
+            if (self.keepAliveEngine == nil) {
+                @try {
+                    AVAudioSession *audioSession = [AVAudioSession sharedInstance];
+                    [audioSession setCategory:AVAudioSessionCategoryPlayback
+                                  withOptions:AVAudioSessionCategoryOptionMixWithOthers
+                                        error:nil];
+                    [audioSession setActive:YES error:nil];
+                    AVAudioEngine *engine = [AVAudioEngine new];
+                    AVAudioPlayerNode *player = [AVAudioPlayerNode new];
+                    [engine attachNode:player];
+                    AVAudioFormat *format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:8000.0 channels:1];
+                    [engine connect:player to:engine.mainMixerNode format:format];
+                    engine.mainMixerNode.outputVolume = 0.0f;
+                    AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:800];
+                    buffer.frameLength = 800;
+                    if (buffer.floatChannelData != NULL && buffer.floatChannelData[0] != NULL) {
+                        memset(buffer.floatChannelData[0], 0, 800 * sizeof(float));
+                    }
+                    if ([engine startAndReturnError:nil]) {
+                        [player scheduleBuffer:buffer atTime:nil options:AVAudioPlayerNodeBufferLoops completionHandler:nil];
+                        [player play];
+                        self.keepAliveEngine = engine;
+                        self.keepAlivePlayer = player;
+                    }
+                } @catch (__unused NSException *e) {
+                }
+            }
+        } else {
+            if (self.keepAlivePlayer != nil) {
+                [self.keepAlivePlayer stop];
+                self.keepAlivePlayer = nil;
+            }
+            if (self.keepAliveEngine != nil) {
+                [self.keepAliveEngine stop];
+                self.keepAliveEngine = nil;
+            }
+            if (self.backgroundTaskID != UIBackgroundTaskInvalid) {
+                [UIApplication.sharedApplication endBackgroundTask:self.backgroundTaskID];
+                self.backgroundTaskID = UIBackgroundTaskInvalid;
+            }
+        }
+    });
+}
+
+- (void)removeActiveJobWithIdentifier:(NSString *)identifier {
+    if (identifier.length == 0) return;
+    [self.activeJobs removeObjectForKey:identifier];
+    [self.jobOrder removeObject:identifier];
+    [self processQueue];
+    [self updateBackgroundKeepAlive];
+}
+
+- (void)processQueue {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSUInteger maxConcurrent = [self maxConcurrentDownloads];
+        NSUInteger running = [self runningJobCount];
+        for (NSString *identifier in [self.jobOrder copy]) {
+            if (running >= maxConcurrent) break;
+            YTKACEDownloadJob *job = self.activeJobs[identifier];
+            if (job == nil || job.cancelled || job.paused || job.started) continue;
+            job.queued = NO;
+            job.started = YES;
+            running++;
+            [YTKACEDownloadProgressView.sharedView setJobQueued:job.identifier queued:NO];
+            [YTKACEDownloadProgressView.sharedView updateJob:job.identifier
+                stage:YTKACELocalized(@"Preparing download") progress:0.0 downloadedBytes:0 totalBytes:0];
+            if (job.useDirect) {
+                [self startDirectJob:job];
+            } else {
+                [self startSABRJob:job];
+            }
+        }
+        [self updateBackgroundKeepAlive];
+    });
+}
+
+- (void)togglePauseJobWithIdentifier:(NSString *)identifier {
+    YTKACEDownloadJob *job = self.activeJobs[identifier];
+    if (job == nil || job.cancelled) return;
+    if (job.paused) {
+        job.paused = NO;
+        [YTKACEDownloadProgressView.sharedView setJobPaused:identifier paused:NO];
+        if (job.started) {
+            [job.directTask resume];
+            [job.sabrTask resume];
+        } else {
+            [YTKACEDownloadProgressView.sharedView setJobQueued:identifier queued:YES];
+        }
+        [self processQueue];
+    } else {
+        job.paused = YES;
+        [job.directTask pause];
+        [job.sabrTask pause];
+        [YTKACEDownloadProgressView.sharedView setJobPaused:identifier paused:YES];
+        [self processQueue];
+    }
+}
+
+- (void)pauseAllJobs {
+    for (NSString *identifier in [self.jobOrder copy]) {
+        YTKACEDownloadJob *job = self.activeJobs[identifier];
+        if (job != nil && !job.paused && !job.cancelled) {
+            job.paused = YES;
+            [job.directTask pause];
+            [job.sabrTask pause];
+            [YTKACEDownloadProgressView.sharedView setJobPaused:identifier paused:YES];
+        }
+    }
+    [self updateBackgroundKeepAlive];
+}
+
+- (void)resumeAllJobs {
+    for (NSString *identifier in [self.jobOrder copy]) {
+        YTKACEDownloadJob *job = self.activeJobs[identifier];
+        if (job != nil && job.paused && !job.cancelled) {
+            job.paused = NO;
+            [YTKACEDownloadProgressView.sharedView setJobPaused:identifier paused:NO];
+            if (job.started) {
+                [job.directTask resume];
+                [job.sabrTask resume];
+            } else {
+                [YTKACEDownloadProgressView.sharedView setJobQueued:identifier queued:YES];
+            }
+        }
+    }
+    [self processQueue];
+}
+
+- (void)moveJobWithIdentifier:(NSString *)identifier delta:(NSInteger)delta {
+    NSUInteger index = [self.jobOrder indexOfObject:identifier];
+    if (index == NSNotFound) return;
+    NSInteger target = (NSInteger)index + delta;
+    if (target < 0) target = 0;
+    if (target >= (NSInteger)self.jobOrder.count) target = (NSInteger)self.jobOrder.count - 1;
+    if (target == (NSInteger)index) return;
+    [self.jobOrder removeObjectAtIndex:index];
+    [self.jobOrder insertObject:identifier atIndex:(NSUInteger)target];
+    [YTKACEDownloadProgressView.sharedView reorderActiveIdentifiers:self.jobOrder];
+    [self processQueue];
 }
 
 - (UIViewController *)topViewController {
@@ -1481,19 +1679,18 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
         if (self.retryableJobs.count >= 24) [self.retryableJobs removeAllObjects];
         self.retryableJobs[job.identifier] = job;
         self.activeJobs[job.identifier] = job;
+        [self.jobOrder removeObject:job.identifier];
+        [self.jobOrder addObject:job.identifier];
+        job.queued = YES;
+        job.started = NO;
         [YTKACEDownloadProgressView.sharedView beginJob:job.identifier
             title:job.title thumbnailURL:job.thumbnailURL];
+        [YTKACEDownloadProgressView.sharedView setJobQueued:job.identifier queued:YES];
         YTKACEDownloadLog(job.identifier,
             @"queued title=%@ author=%@ category=%@ audioOnly=%d active=%lu",
             job.title, job.author, job.category, job.audioOnly,
             (unsigned long)self.activeJobs.count);
-        [YTKACEDownloadProgressView.sharedView updateJob:job.identifier
-            stage:YTKACELocalized(@"Preparing download") progress:0.0 downloadedBytes:0 totalBytes:0];
-        if (job.useDirect) {
-            [self startDirectJob:job];
-        } else {
-            [self startSABRJob:job];
-        }
+        [self processQueue];
     }
 }
 
@@ -1726,7 +1923,7 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
                     [self showAlertWithTitle:YTKACELocalized(@"Download failed")
                         message:[self failureMessageForError:remuxError
                             job:job]];
-                    [self.activeJobs removeObjectForKey:job.identifier];
+                    [self removeActiveJobWithIdentifier:job.identifier];
                     return;
                 }
                 [NSFileManager.defaultManager removeItemAtURL:audioURL error:nil];
@@ -1796,7 +1993,7 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
                 error.code == NSURLErrorCancelled) {
                 [YTKACEDownloadProgressView.sharedView finishJob:job.identifier
                     success:NO message:YTKACELocalized(@"Cancelled")];
-                [strongSelf.activeJobs removeObjectForKey:job.identifier];
+                [strongSelf removeActiveJobWithIdentifier:job.identifier];
                 return;
             }
             YTKACEDownloadLog(job.identifier, @"direct failed error=%@ fallback=sabr",
@@ -1806,7 +2003,7 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
                     success:NO message:YTKACELocalized(@"Failed")];
                 [strongSelf showAlertWithTitle:YTKACELocalized(@"Download failed")
                     message:[strongSelf failureMessageForError:error job:job]];
-                [strongSelf.activeJobs removeObjectForKey:job.identifier];
+                [strongSelf removeActiveJobWithIdentifier:job.identifier];
                 return;
             }
             job.useDirect = NO;
@@ -1865,7 +2062,7 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
                     [weakSelf showAlertWithTitle:YTKACELocalized(@"Download failed")
                         message:[weakSelf failureMessageForError:error job:job]];
                 }
-                [weakSelf.activeJobs removeObjectForKey:job.identifier];
+                [weakSelf removeActiveJobWithIdentifier:job.identifier];
                 return;
             }
             [weakSelf completeJob:job videoURL:videoURL audioURL:audioURL];
@@ -2026,11 +2223,11 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
                     [strongSelf presentShareSheetForURL:destination];
                 }
             }
-            [strongSelf.activeJobs removeObjectForKey:job.identifier];
+            [strongSelf removeActiveJobWithIdentifier:job.identifier];
         }];
         return;
     }
-    [self.activeJobs removeObjectForKey:job.identifier];
+    [self removeActiveJobWithIdentifier:job.identifier];
 }
 
 - (void)squareArtworkForJob:(YTKACEDownloadJob *)job
@@ -2207,7 +2404,7 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
                 [NSFileManager.defaultManager removeItemAtURL:output error:nil];
                 [NSFileManager.defaultManager
                     removeItemAtURL:videoURL.URLByDeletingLastPathComponent error:nil];
-                [weakSelf.activeJobs removeObjectForKey:job.identifier];
+                [weakSelf removeActiveJobWithIdentifier:job.identifier];
                 return;
             }
             [NSFileManager.defaultManager removeItemAtURL:videoURL error:nil];

@@ -54,6 +54,9 @@ FOUNDATION_EXPORT void YTKACEBuildNativeOnesieRequest(
     YTKACENativeRequestCompletion completion);
 
 @interface YTKACESABRTask : NSObject
+@property(atomic, assign, readonly) BOOL paused;
+- (void)pause;
+- (void)resume;
 - (void)cancel;
 @end
 

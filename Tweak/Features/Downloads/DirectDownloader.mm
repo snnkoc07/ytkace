@@ -31,13 +31,48 @@ BOOL YTKACETVDownloadsEnabled(void) {
 
 @interface YTKACEDirectTask ()
 @property(atomic, assign) BOOL cancelled;
-@property(atomic, strong) NSURLSessionTask *currentTask;
+@property(atomic, assign, readwrite) BOOL paused;
+@property(atomic, strong) NSMutableArray<NSURLSessionTask *> *currentTasks;
 @end
 
+static NSInteger YTKACEDirectParallelConnections(void) {
+    id stored = YTKACEPreferenceObject(@"YTKACE.Preference.Downloads.Connections");
+    if ([stored respondsToSelector:@selector(integerValue)]) {
+        NSInteger val = [stored integerValue];
+        if (val >= 1 && val <= 16) return val;
+    }
+    return 4;
+}
+
 @implementation YTKACEDirectTask
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _currentTasks = [NSMutableArray array];
+    }
+    return self;
+}
+- (void)pause {
+    self.paused = YES;
+    @synchronized (self.currentTasks) {
+        for (NSURLSessionTask *t in self.currentTasks) {
+            [t cancel];
+        }
+        [self.currentTasks removeAllObjects];
+    }
+}
+- (void)resume {
+    self.paused = NO;
+}
 - (void)cancel {
     self.cancelled = YES;
-    [self.currentTask cancel];
+    self.paused = NO;
+    @synchronized (self.currentTasks) {
+        for (NSURLSessionTask *t in self.currentTasks) {
+            [t cancel];
+        }
+        [self.currentTasks removeAllObjects];
+    }
 }
 @end
 
@@ -71,14 +106,18 @@ static NSData *YTKACEDirectFetch(NSURLRequest *request, YTKACEDirectTask *task,
                 ? ((NSHTTPURLResponse *)response).statusCode : 0;
             dispatch_semaphore_signal(done);
         }];
-    task.currentTask = dataTask;
+    @synchronized (task.currentTasks) {
+        [task.currentTasks addObject:dataTask];
+    }
     [dataTask resume];
     if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW,
             (int64_t)(90 * NSEC_PER_SEC))) != 0) {
         [dataTask cancel];
         failure = YTKACEDirectError(2, @"request timed out");
     }
-    task.currentTask = nil;
+    @synchronized (task.currentTasks) {
+        [task.currentTasks removeObject:dataTask];
+    }
     if (status != NULL) *status = code;
     if (error != NULL) *error = failure;
     return result;
@@ -136,14 +175,18 @@ static NSData *YTKACEDirectFetchChunk(NSURLRequest *request, YTKACEDirectTask *t
     receiver.received = received;
     NSURLSessionDataTask *dataTask = [NSURLSession.sharedSession dataTaskWithRequest:request];
     dataTask.delegate = receiver;
-    task.currentTask = dataTask;
+    @synchronized (task.currentTasks) {
+        [task.currentTasks addObject:dataTask];
+    }
     [dataTask resume];
     if (dispatch_semaphore_wait(receiver.done, dispatch_time(DISPATCH_TIME_NOW,
             (int64_t)(90 * NSEC_PER_SEC))) != 0) {
         [dataTask cancel];
         receiver.error = YTKACEDirectError(2, @"request timed out");
     }
-    task.currentTask = nil;
+    @synchronized (task.currentTasks) {
+        [task.currentTasks removeObject:dataTask];
+    }
     if (status != NULL) *status = receiver.status;
     if (error != NULL) *error = receiver.error;
     return receiver.error == nil ? receiver.data : nil;
@@ -290,61 +333,129 @@ static YTKACEStreamOption *YTKACEDirectMatch(NSArray<YTKACEStreamOption *> *opti
     [NSFileManager.defaultManager createFileAtPath:file.path contents:nil attributes:nil];
     NSFileHandle *handle = [NSFileHandle fileHandleForWritingToURL:file error:error];
     if (handle == nil) return NO;
-    YTKACEStreamOption *current = option;
+    __block YTKACEStreamOption *current = option;
     int64_t total = MAX((int64_t)current.contentLength, 0);
     int64_t offset = 0;
     BOOL finished = NO;
+    NSInteger maxWorkers = total > YTKACEDirectChunkSize ? YTKACEDirectParallelConnections() : 1;
+    NSObject *lock = [NSObject new];
     while (!finished) {
+        while (self.task.paused && !self.task.cancelled) {
+            [NSThread sleepForTimeInterval:0.2];
+        }
         if (self.task.cancelled) {
             [handle closeFile];
             if (error != NULL) *error = [NSError errorWithDomain:NSURLErrorDomain
                 code:NSURLErrorCancelled userInfo:nil];
             return NO;
         }
-        int64_t end = total > 0 ? MIN(offset + YTKACEDirectChunkSize, total) - 1
-                                : offset + YTKACEDirectChunkSize - 1;
-        NSData *chunk = nil;
-        NSInteger status = 0;
-        for (NSInteger attempt = 0; attempt < YTKACEDirectChunkAttempts && chunk == nil; attempt++) {
-            if (self.task.cancelled) break;
-            if (attempt > 0) [NSThread sleepForTimeInterval:0.6 * attempt];
-            NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:current.URL];
-            [request setValue:[NSString stringWithFormat:@"bytes=%lld-%lld", offset, end]
-                forHTTPHeaderField:@"Range"];
-            [request setValue:YTKACEDirectUserAgent forHTTPHeaderField:@"User-Agent"];
-            request.timeoutInterval = 45.0;
-            NSError *fetchError = nil;
-            int64_t chunkStart = offset;
-            NSData *data = YTKACEDirectFetchChunk(request, self.task, ^(int64_t bytes) {
-                if (progress != nil) progress(chunkStart + bytes);
-            }, &status, &fetchError);
-            BOOL ok = (status == 206 || status == 200) && data.length != 0 &&
-                (total <= 0 || (int64_t)data.length == end - offset + 1);
-            if (ok) {
-                chunk = data;
-                break;
-            }
-            YTKACEDownloadLog(self.identifier, @"direct chunk retry itag=%ld offset=%lld http=%ld error=%@",
-                (long)current.itag, offset, (long)status, fetchError.localizedDescription ?: @"none");
-            if ((status == 403 || status == 410 || attempt == 1) && [self refreshOptions]) {
-                YTKACEStreamOption *renewed = YTKACEDirectMatch(self.options, current, audio);
-                if (renewed != nil) current = renewed;
-            }
+        NSInteger batchCount = 1;
+        if (total > 0 && maxWorkers > 1) {
+            int64_t remaining = total - offset;
+            batchCount = (NSInteger)MIN((int64_t)maxWorkers, (remaining + YTKACEDirectChunkSize - 1) / YTKACEDirectChunkSize);
+            batchCount = MAX(batchCount, 1);
         }
-        if (chunk == nil) {
+        NSMutableArray *batchResults = [NSMutableArray arrayWithCapacity:(NSUInteger)batchCount];
+        NSMutableArray<NSNumber *> *workerProgress = [NSMutableArray arrayWithCapacity:(NSUInteger)batchCount];
+        for (NSInteger i = 0; i < batchCount; i++) {
+            [batchResults addObject:NSNull.null];
+            [workerProgress addObject:@0];
+        }
+        __block BOOL batchFailed = NO;
+        __block NSInteger failedStatus = 0;
+        __block int64_t failedOffset = 0;
+        int64_t batchStartOffset = offset;
+
+        dispatch_group_t group = dispatch_group_create();
+        for (NSInteger w = 0; w < batchCount; w++) {
+            int64_t wStart = batchStartOffset + (int64_t)w * YTKACEDirectChunkSize;
+            int64_t wEnd = total > 0 ? MIN(wStart + YTKACEDirectChunkSize, total) - 1
+                                     : wStart + YTKACEDirectChunkSize - 1;
+            dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                NSData *chunk = nil;
+                NSInteger status = 0;
+                for (NSInteger attempt = 0; attempt < YTKACEDirectChunkAttempts && chunk == nil; attempt++) {
+                    while (self.task.paused && !self.task.cancelled) {
+                        [NSThread sleepForTimeInterval:0.2];
+                    }
+                    if (self.task.cancelled) break;
+                    if (attempt > 0) [NSThread sleepForTimeInterval:0.6 * attempt];
+                    YTKACEStreamOption *activeOpt = nil;
+                    @synchronized (lock) { activeOpt = current; }
+                    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:activeOpt.URL];
+                    [request setValue:[NSString stringWithFormat:@"bytes=%lld-%lld", wStart, wEnd]
+                        forHTTPHeaderField:@"Range"];
+                    [request setValue:YTKACEDirectUserAgent forHTTPHeaderField:@"User-Agent"];
+                    request.timeoutInterval = 45.0;
+                    NSError *fetchError = nil;
+                    NSData *data = YTKACEDirectFetchChunk(request, self.task, ^(int64_t bytes) {
+                        if (progress == nil) return;
+                        int64_t sum = batchStartOffset;
+                        @synchronized (lock) {
+                            workerProgress[(NSUInteger)w] = @(bytes);
+                            for (NSNumber *num in workerProgress) sum += num.longLongValue;
+                        }
+                        progress(sum);
+                    }, &status, &fetchError);
+                    if (self.task.paused && !self.task.cancelled) {
+                        attempt--;
+                        continue;
+                    }
+                    BOOL ok = (status == 206 || status == 200) && data.length != 0 &&
+                        (total <= 0 || (int64_t)data.length == wEnd - wStart + 1);
+                    if (ok) {
+                        chunk = data;
+                        @synchronized (lock) {
+                            workerProgress[(NSUInteger)w] = @((int64_t)data.length);
+                        }
+                        break;
+                    }
+                    YTKACEDownloadLog(self.identifier, @"direct chunk retry itag=%ld offset=%lld http=%ld error=%@",
+                        (long)activeOpt.itag, wStart, (long)status, fetchError.localizedDescription ?: @"none");
+                    if (status == 403 || status == 410 || attempt == 1) {
+                        @synchronized (lock) {
+                            if ([self refreshOptions]) {
+                                YTKACEStreamOption *renewed = YTKACEDirectMatch(self.options, current, audio);
+                                if (renewed != nil) current = renewed;
+                            }
+                        }
+                    }
+                }
+                @synchronized (lock) {
+                    if (chunk != nil) {
+                        batchResults[(NSUInteger)w] = chunk;
+                    } else {
+                        batchFailed = YES;
+                        failedStatus = status;
+                        failedOffset = wStart;
+                    }
+                }
+            });
+        }
+        dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+
+        if (self.task.paused && !self.task.cancelled) {
+            continue;
+        }
+        if (batchFailed || self.task.cancelled) {
             [handle closeFile];
             if (error != NULL) {
                 *error = self.task.cancelled
                     ? [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]
                     : YTKACEDirectError(3, [NSString stringWithFormat:
-                        @"chunk failed at %lld http=%ld", offset, (long)status]);
+                        @"chunk failed at %lld http=%ld", failedOffset, (long)failedStatus]);
             }
             return NO;
         }
-        [handle writeData:chunk];
-        offset += (int64_t)chunk.length;
+        int64_t lastChunkLen = 0;
+        for (NSInteger w = 0; w < batchCount; w++) {
+            NSData *chunk = batchResults[(NSUInteger)w];
+            [handle writeData:chunk];
+            offset += (int64_t)chunk.length;
+            lastChunkLen = (int64_t)chunk.length;
+        }
         if (progress != nil) progress(offset);
-        finished = total > 0 ? offset >= total : (int64_t)chunk.length < YTKACEDirectChunkSize;
+        finished = total > 0 ? offset >= total : lastChunkLen < YTKACEDirectChunkSize;
     }
     [handle closeFile];
     return YES;

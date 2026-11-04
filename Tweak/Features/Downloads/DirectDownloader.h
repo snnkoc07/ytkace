@@ -10,6 +10,9 @@ FOUNDATION_EXPORT BOOL YTKACEDirectDownloadsEnabled(void);
 FOUNDATION_EXPORT BOOL YTKACETVDownloadsEnabled(void);
 
 @interface YTKACEDirectTask : NSObject
+@property(atomic, assign, readonly) BOOL paused;
+- (void)pause;
+- (void)resume;
 - (void)cancel;
 @end
 

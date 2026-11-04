@@ -17,6 +17,8 @@ FOUNDATION_EXPORT void YTKACESaveVideoToPhotosFile(
 - (void)showDownloadMenuForResponse:(id)response
                         sourceView:(nullable UIView *)sourceView;
 - (NSUInteger)activeJobCount;
+- (void)pauseAllJobs;
+- (void)resumeAllJobs;
 - (BOOL)enqueueDownloadForResponse:(id)response
                            quality:(NSInteger)quality
                          audioOnly:(BOOL)audioOnly

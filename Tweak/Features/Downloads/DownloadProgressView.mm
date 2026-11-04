@@ -16,6 +16,11 @@
 @property(nonatomic, assign) double progress;
 @property(nonatomic, assign) int64_t downloadedBytes;
 @property(nonatomic, assign) int64_t totalBytes;
+@property(nonatomic, assign) int64_t lastSampleBytes;
+@property(nonatomic, assign) NSTimeInterval lastSampleTime;
+@property(nonatomic, assign) double bytesPerSecond;
+@property(nonatomic, assign) BOOL paused;
+@property(nonatomic, assign) BOOL queued;
 @property(nonatomic, assign) BOOL failed;
 @property(nonatomic, copy, nullable) NSString *detail;
 @end
@@ -34,6 +39,7 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
 @property(nonatomic, strong) UILabel *percentLabel;
 @property(nonatomic, strong) UIProgressView *progressView;
 @property(nonatomic, strong) UIButton *cancelButton;
+@property(nonatomic, strong) UIButton *pauseButton;
 @property(nonatomic, strong) UIButton *retryButton;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, YTKACEDownloadProgressItem *> *items;
 @property(nonatomic, strong) NSMutableArray<NSString *> *activeIdentifiers;
@@ -58,6 +64,7 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
     self.detailLabel.textColor = UIColor.tertiaryLabelColor;
     self.percentLabel.textColor = UIColor.labelColor;
     self.cancelButton.tintColor = UIColor.tertiaryLabelColor;
+    self.pauseButton.tintColor = UIColor.secondaryLabelColor;
     self.retryButton.tintColor = UIColor.systemRedColor;
     self.progressView.trackTintColor = oled
         ? [UIColor colorWithWhite:0.18 alpha:1.0]
@@ -150,6 +157,12 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
     [self.retryButton addTarget:self action:@selector(retryTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.card addSubview:self.retryButton];
 
+    self.pauseButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.pauseButton setImage:[UIImage systemImageNamed:@"pause.circle.fill"] forState:UIControlStateNormal];
+    self.pauseButton.hidden = YES;
+    [self.pauseButton addTarget:self action:@selector(pauseTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.card addSubview:self.pauseButton];
+
     self.progressView = [[UIProgressView alloc]
         initWithProgressViewStyle:UIProgressViewStyleDefault];
     self.progressView.progressTintColor = UIColor.systemBlueColor;
@@ -184,8 +197,10 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
     self.thumbnailView.layer.cornerRadius = 7.0;
     self.cancelButton.frame = CGRectMake(width - 32.0, 19.0, 26.0, 26.0);
     self.retryButton.frame = CGRectMake(width - 60.0, 19.0, 26.0, 26.0);
+    self.pauseButton.frame = CGRectMake(width - 60.0, 19.0, 26.0, 26.0);
     CGFloat textX = 103.0;
-    CGFloat rightEdge = self.retryButton.hidden ? width - 38.0 : width - 66.0;
+    BOOL hasSecondaryButton = !self.retryButton.hidden || !self.pauseButton.hidden;
+    CGFloat rightEdge = hasSecondaryButton ? width - 66.0 : width - 38.0;
     self.percentLabel.frame = CGRectMake(rightEdge - 44.0, 9.0, 42.0, 18.0);
     CGFloat titleRight = self.percentLabel.hidden ? rightEdge : rightEdge - 48.0;
     self.titleLabel.frame = CGRectMake(textX, 9.0, MAX(40.0, titleRight - textX), 18.0);
@@ -302,15 +317,32 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
     if (item.failed) bytes = @"";
     NSString *stageText = item.failed && item.detail.length != 0
         ? [NSString stringWithFormat:@"%@ · %@", item.stage, item.detail] : item.stage;
+    if (item.paused) stageText = YTKACELocalized(@"Paused");
+    else if (item.queued) stageText = YTKACELocalized(@"Queued");
     self.statusLabel.textColor = item.failed ? UIColor.systemRedColor : UIColor.secondaryLabelColor;
     NSString *detail = [bytes stringByReplacingOccurrencesOfString:@"  •  " withString:@""];
     NSString *summary = [count stringByReplacingOccurrencesOfString:@"  •  " withString:@""];
     NSMutableArray<NSString *> *details = [NSMutableArray array];
     if (detail.length != 0) [details addObject:detail];
+    if (!item.paused && !item.queued && !item.failed && item.bytesPerSecond > 1024.0) {
+        NSString *speed = [NSString stringWithFormat:@"%@/s",
+            [NSByteCountFormatter stringFromByteCount:(long long)item.bytesPerSecond
+                countStyle:NSByteCountFormatterCountStyleFile]];
+        [details addObject:speed];
+    }
     if (summary.length != 0) [details addObject:summary];
     [details insertObject:stageText atIndex:0];
     self.statusLabel.text = [details componentsJoinedByString:@" · "];
     self.retryButton.hidden = !item.failed || self.retryHandler == nil;
+    BOOL terminalStage = [item.stage isEqualToString:YTKACELocalized(@"Merging")] ||
+        [item.stage isEqualToString:YTKACELocalized(@"Finalizing")] ||
+        [item.stage isEqualToString:YTKACELocalized(@"Complete")] ||
+        [item.stage isEqualToString:YTKACELocalized(@"Cancelled")];
+    self.pauseButton.hidden = item.failed || terminalStage || self.pauseHandler == nil;
+    if (!self.pauseButton.hidden) {
+        NSString *pauseSymbol = item.paused ? @"play.circle.fill" : @"pause.circle.fill";
+        [self.pauseButton setImage:[UIImage systemImageNamed:pauseSymbol] forState:UIControlStateNormal];
+    }
     self.percentLabel.hidden = item.failed;
     [self layoutCard];
     double progress = isfinite(item.progress)
@@ -362,6 +394,9 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
             @"progress": @(item.progress),
             @"downloadedBytes": @(item.downloadedBytes),
             @"totalBytes": @(item.totalBytes),
+            @"speed": @(item.bytesPerSecond),
+            @"paused": @(item.paused),
+            @"queued": @(item.queued),
             @"failed": @(item.failed),
             @"detail": item.detail ?: @"",
             @"thumbnail": item.thumbnail ?: (id)NSNull.null
@@ -418,6 +453,59 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
     if (item == nil || !item.failed || self.retryHandler == nil) return;
     [self removeItem:identifier];
     self.retryHandler(identifier);
+}
+
+- (void)togglePauseJob:(NSString *)identifier {
+    if (identifier.length == 0 || self.pauseHandler == nil) return;
+    self.pauseHandler(identifier);
+}
+
+- (void)moveJob:(NSString *)identifier delta:(NSInteger)delta {
+    if (identifier.length == 0 || self.moveHandler == nil) return;
+    self.moveHandler(identifier, delta);
+}
+
+- (void)setJobPaused:(NSString *)identifier paused:(BOOL)paused {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        YTKACEDownloadProgressItem *item = self.items[identifier];
+        if (item == nil) return;
+        item.paused = paused;
+        if (paused) item.bytesPerSecond = 0.0;
+        if ([self.visibleIdentifier isEqualToString:identifier]) [self renderItem:item];
+        [self postChange];
+    });
+}
+
+- (void)setJobQueued:(NSString *)identifier queued:(BOOL)queued {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        YTKACEDownloadProgressItem *item = self.items[identifier];
+        if (item == nil) return;
+        item.queued = queued;
+        if (queued) {
+            item.stage = YTKACELocalized(@"Queued");
+            item.bytesPerSecond = 0.0;
+        }
+        if ([self.visibleIdentifier isEqualToString:identifier]) [self renderItem:item];
+        [self postChange];
+    });
+}
+
+- (void)reorderActiveIdentifiers:(NSArray<NSString *> *)orderedIdentifiers {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSMutableArray<NSString *> *updated = [NSMutableArray array];
+        for (NSString *identifier in orderedIdentifiers) {
+            if (self.items[identifier] != nil && ![updated containsObject:identifier]) {
+                [updated addObject:identifier];
+            }
+        }
+        for (NSString *identifier in self.activeIdentifiers) {
+            if (![updated containsObject:identifier]) {
+                [updated addObject:identifier];
+            }
+        }
+        self.activeIdentifiers = updated;
+        [self postChange];
+    });
 }
 
 - (void)loadThumbnailForItem:(YTKACEDownloadProgressItem *)item {
@@ -477,11 +565,26 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
     dispatch_async(dispatch_get_main_queue(), ^{
         YTKACEDownloadProgressItem *item = self.items[identifier];
         if (item == nil) return;
+        item.queued = NO;
         BOOL sameStage = [item.stage isEqualToString:stage];
         item.stage = stage;
         double nextProgress = isfinite(progress)
             ? MIN(MAX(progress, 0.0), 1.0) : 0.0;
         int64_t nextBytes = MAX(downloadedBytes, 0);
+        NSTimeInterval now = CFAbsoluteTimeGetCurrent();
+        if (nextBytes > item.lastSampleBytes && item.lastSampleTime > 0.0) {
+            NSTimeInterval dt = now - item.lastSampleTime;
+            if (dt >= 0.25) {
+                double instant = (double)(nextBytes - item.lastSampleBytes) / dt;
+                item.bytesPerSecond = item.bytesPerSecond > 0.0
+                    ? (item.bytesPerSecond * 0.6 + instant * 0.4) : instant;
+                item.lastSampleBytes = nextBytes;
+                item.lastSampleTime = now;
+            }
+        } else if (item.lastSampleTime <= 0.0 || nextBytes < item.lastSampleBytes) {
+            item.lastSampleBytes = nextBytes;
+            item.lastSampleTime = now;
+        }
         item.progress = sameStage ? MAX(item.progress, nextProgress) : nextProgress;
         item.downloadedBytes = sameStage ? MAX(item.downloadedBytes, nextBytes) : nextBytes;
         item.totalBytes = MAX(totalBytes, 0);
@@ -529,6 +632,7 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
        shouldReceiveTouch:(UITouch *)touch {
     (void)gestureRecognizer;
     return ![touch.view isDescendantOfView:self.cancelButton] &&
+        ![touch.view isDescendantOfView:self.pauseButton] &&
         ![touch.view isDescendantOfView:self.retryButton];
 }
 
@@ -546,6 +650,11 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
 - (void)cancelTapped {
     NSString *identifier = self.visibleIdentifier;
     if (identifier.length != 0) [self cancelOrDismissJob:identifier];
+}
+
+- (void)pauseTapped {
+    NSString *identifier = self.visibleIdentifier;
+    if (identifier.length != 0) [self togglePauseJob:identifier];
 }
 
 - (void)retryTapped {

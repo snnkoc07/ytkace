@@ -349,11 +349,20 @@ static void YTKACERunPlaylistQueue(NSArray<NSDictionary *> *queue,
         YTKACEDownloadLog(@"playlist", @"item %lu/%lu video=%@ queued=%d error=%@",
             (unsigned long)(index + 1), (unsigned long)queue.count, videoID,
             queued, error.localizedDescription ?: @"none");
-        YTKACEWaitForIdleDownloads(0, ^{
-            YTKACERunPlaylistQueue(queue, index + 1, quality, audioOnly,
-                savesToPhotos, sharesFile, started + (queued ? 1 : 0),
-                failed + (queued ? 0 : 1));
-        });
+        if (index + 1 >= queue.count) {
+            YTKACEWaitForIdleDownloads(0, ^{
+                YTKACERunPlaylistQueue(queue, index + 1, quality, audioOnly,
+                    savesToPhotos, sharesFile, started + (queued ? 1 : 0),
+                    failed + (queued ? 0 : 1));
+            });
+        } else {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    YTKACERunPlaylistQueue(queue, index + 1, quality, audioOnly,
+                        savesToPhotos, sharesFile, started + (queued ? 1 : 0),
+                        failed + (queued ? 0 : 1));
+                });
+        }
     });
 }
 
