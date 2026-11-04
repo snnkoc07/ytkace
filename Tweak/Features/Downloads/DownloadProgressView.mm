@@ -372,11 +372,7 @@ NSNotificationName const YTKACEDownloadJobsDidChangeNotification = @"YTKACEDownl
          withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
     (void)center;
     if ([notification.request.identifier hasPrefix:@"ytkace.download."]) {
-        if (@available(iOS 14.0, *)) {
-            completionHandler(UNNotificationPresentationOptionList | UNNotificationPresentationOptionBanner);
-        } else {
-            completionHandler(UNNotificationPresentationOptionAlert);
-        }
+        completionHandler(UNNotificationPresentationOptionList | UNNotificationPresentationOptionBanner);
         return;
     }
     completionHandler(UNNotificationPresentationOptionNone);
