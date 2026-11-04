@@ -178,3 +178,60 @@ void YTKACEShowNotice(NSString *message) {
             });
     });
 }
+
+void YTKACEShowTopNotice(NSString *message, NSTimeInterval duration) {
+    if (message.length == 0) {
+        return;
+    }
+    if (duration <= 0.0) duration = 2.0;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *host = YTKACENoticeController().view;
+        if (host.window == nil) return;
+        UIView *old = [host viewWithTag:0x594B5450];
+        [old removeFromSuperview];
+        UIView *banner = [UIView new];
+        banner.tag = 0x594B5450;
+        banner.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.94];
+        banner.layer.cornerRadius = 12.0;
+        banner.layer.masksToBounds = YES;
+        banner.translatesAutoresizingMaskIntoConstraints = NO;
+        banner.alpha = 0.0;
+        banner.transform = CGAffineTransformMakeTranslation(0.0, -14.0);
+        UILabel *label = [UILabel new];
+        label.text = message;
+        label.textColor = UIColor.whiteColor;
+        label.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
+        label.textAlignment = NSTextAlignmentCenter;
+        label.numberOfLines = 0;
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        [banner addSubview:label];
+        YTKACEApplyGlassBackground(banner, YES);
+        [host addSubview:banner];
+        UILayoutGuide *safe = host.safeAreaLayoutGuide;
+        [NSLayoutConstraint activateConstraints:@[
+            [banner.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
+            [banner.topAnchor constraintEqualToAnchor:safe.topAnchor constant:12.0],
+            [banner.widthAnchor constraintGreaterThanOrEqualToConstant:160.0],
+            [banner.widthAnchor constraintLessThanOrEqualToAnchor:safe.widthAnchor constant:-28.0],
+            [label.topAnchor constraintEqualToAnchor:banner.topAnchor constant:10.0],
+            [label.bottomAnchor constraintEqualToAnchor:banner.bottomAnchor constant:-10.0],
+            [label.leadingAnchor constraintEqualToAnchor:banner.leadingAnchor constant:16.0],
+            [label.trailingAnchor constraintEqualToAnchor:banner.trailingAnchor constant:-16.0]
+        ]];
+        [UIView animateWithDuration:0.22 animations:^{
+            banner.alpha = 1.0;
+            banner.transform = CGAffineTransformIdentity;
+        }];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+                if (banner.superview != nil) {
+                    [UIView animateWithDuration:0.2 animations:^{
+                        banner.alpha = 0.0;
+                        banner.transform = CGAffineTransformMakeTranslation(0.0, -10.0);
+                    } completion:^(__unused BOOL finished) {
+                        [banner removeFromSuperview];
+                    }];
+                }
+            });
+    });
+}

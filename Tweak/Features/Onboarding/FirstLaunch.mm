@@ -3,6 +3,7 @@
 #import "../../Runtime/Localization.h"
 
 #import <UIKit/UIKit.h>
+#import <UserNotifications/UserNotifications.h>
 
 static NSString * const YTKACEOnboardingKey = @"YTKACE.Preference.Onboarding.Shown";
 
@@ -94,6 +95,16 @@ static UIViewController *YTKACEFirstLaunchPresenter(void) {
 void YTKACEScheduleFirstLaunch(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC),
+            dispatch_get_main_queue(), ^{
+                YTKACEPerformWithRealBundleIdentifier(^{
+                    [[UNUserNotificationCenter currentNotificationCenter]
+                        requestAuthorizationWithOptions:(UNAuthorizationOptionAlert |
+                                                         UNAuthorizationOptionSound |
+                                                         UNAuthorizationOptionBadge)
+                                      completionHandler:^(__unused BOOL granted, __unused NSError *error) {}];
+                });
+            });
         if ([NSUserDefaults.standardUserDefaults boolForKey:YTKACEOnboardingKey]) return;
         YTKACEFirstLaunchInstance = [YTKACEFirstLaunchFlow new];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),

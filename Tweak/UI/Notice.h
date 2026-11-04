@@ -5,6 +5,7 @@ NS_ASSUME_NONNULL_BEGIN
 @class UIView;
 
 FOUNDATION_EXPORT void YTKACEShowNotice(NSString *message);
+FOUNDATION_EXPORT void YTKACEShowTopNotice(NSString *message, NSTimeInterval duration);
 FOUNDATION_EXPORT BOOL YTKACEApplyGlassBackground(UIView *view, BOOL dark);
 FOUNDATION_EXPORT BOOL YTKACEShowYouTubeDialog(NSString *title,
                                                 NSString *message);

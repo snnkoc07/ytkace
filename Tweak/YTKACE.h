@@ -88,6 +88,7 @@ id _Nullable YTKACEHLSOriginalResponse(NSString * _Nullable videoID);
 BOOL YTKACEHLSBeginFallback(NSString * _Nullable videoID, void (^ _Nonnull ready)(BOOL available));
 void YTKACEInstallShortsHooks(void);
 void YTKACEInstallSideloadCompatibilityHooks(void);
+void YTKACEPerformWithRealBundleIdentifier(dispatch_block_t block);
 void YTKACEInstallCastCompatibilityHooks(void);
 void YTKACEStartCastDiscovery(void);
 void YTKACEInstallTabBarHooks(void);

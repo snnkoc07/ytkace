@@ -9,6 +9,30 @@
 
 static NSString * const YTKACEYouTubeIdentifier = @"com.google.ios.youtube";
 static NSString * const YTKACEYouTubeName = @"YouTube";
+static NSString *YTKACERealBundleIdentifier = nil;
+static _Thread_local NSInteger YTKACERealBundleBypassDepth = 0;
+
+void YTKACEPerformWithRealBundleIdentifier(dispatch_block_t block) {
+    if (block == nil) return;
+    YTKACERealBundleBypassDepth++;
+    @try {
+        block();
+    } @finally {
+        YTKACERealBundleBypassDepth--;
+    }
+}
+
+static BOOL YTKACEFromSystemNotificationCallStack(void) {
+    if (YTKACERealBundleBypassDepth > 0) return YES;
+    for (NSString *symbol in NSThread.callStackSymbols) {
+        if ([symbol containsString:@"UserNotifications"] ||
+            [symbol containsString:@"UNUserNotification"] ||
+            [symbol containsString:@"SpringBoardServices"]) {
+            return YES;
+        }
+    }
+    return NO;
+}
 
 static IMP OriginalBundleWithIdentifier;
 static IMP OriginalBundleIdentifier;
@@ -84,6 +108,9 @@ static NSBundle *YTKACEBundleWithIdentifier(id receiver,
 
 static NSString *YTKACEBundleIdentifier(NSBundle *receiver, SEL selector) {
     if (receiver == NSBundle.mainBundle) {
+        if (YTKACEFromSystemNotificationCallStack() && YTKACERealBundleIdentifier.length != 0) {
+            return YTKACERealBundleIdentifier;
+        }
         return YTKACEYouTubeIdentifier;
     }
     return OriginalBundleIdentifier == NULL
@@ -99,7 +126,10 @@ static NSDictionary *YTKACEInfoDictionary(NSBundle *receiver, SEL selector) {
         return info;
     }
     NSMutableDictionary *updated = [info mutableCopy];
-    updated[@"CFBundleIdentifier"] = YTKACEYouTubeIdentifier;
+    updated[@"CFBundleIdentifier"] =
+        (YTKACEFromSystemNotificationCallStack() && YTKACERealBundleIdentifier.length != 0)
+            ? YTKACERealBundleIdentifier
+            : YTKACEYouTubeIdentifier;
     updated[@"CFBundleDisplayName"] = YTKACEYouTubeName;
     updated[@"CFBundleName"] = YTKACEYouTubeName;
     return [updated copy];
@@ -110,6 +140,9 @@ static id YTKACEInfoValue(NSBundle *receiver,
                           NSString *key) {
     if (receiver == NSBundle.mainBundle) {
         if ([key isEqualToString:@"CFBundleIdentifier"]) {
+            if (YTKACEFromSystemNotificationCallStack() && YTKACERealBundleIdentifier.length != 0) {
+                return YTKACERealBundleIdentifier;
+            }
             return YTKACEYouTubeIdentifier;
         }
         if ([key isEqualToString:@"CFBundleDisplayName"] ||
@@ -270,6 +303,7 @@ void YTKACEInstallSideloadCompatibilityHooks(void) {
                               &OriginalApplicationSetDelegate);
 
     NSString *realIdentifier = NSBundle.mainBundle.bundleIdentifier;
+    YTKACERealBundleIdentifier = [realIdentifier copy];
     if (![realIdentifier isEqualToString:YTKACEYouTubeIdentifier]) {
         YTKACEInstallClassHook(@"NSBundle", @"bundleWithIdentifier:",
                                (IMP)YTKACEBundleWithIdentifier,
