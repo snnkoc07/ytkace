@@ -1065,3 +1065,14 @@ CC BY-NC-SA 4.0 ile lisanslanmıştır.";
 "Still show Shorts on the Home feed when shelves are removed." = "Raflar kaldırıldığında Shorts'u ana sayfada göstermeye devam et.";
 "Still show Shorts in search results when shelves are removed." = "Raflar kaldırıldığında Shorts'u arama sonuçlarında göstermeye devam et.";
 "Still show Shorts on channel pages when shelves are removed." = "Raflar kaldırıldığında Shorts'u kanal sayfalarında göstermeye devam et.";
+"Paused" = "Duraklatıldı";
+"Queued" = "Sırada";
+"Pause All" = "Tümünü Duraklat";
+"Resume All" = "Tümünü Başlat";
+"Concurrent Downloads" = "Eşzamanlı İndirme Sayısı";
+"Maximum number of downloads running at the same time." = "Aynı anda çalışacak maksimum indirme sayısı.";
+"Connections per Download (IDM)" = "İndirme Başına Bağlantı (IDM)";
+"Splits direct downloads into parallel chunks for faster speed." = "Doğrudan indirmeleri daha yüksek hız için paralel parçalara böler.";
+"Background Downloading" = "Arka Planda İndirme";
+"Keep downloads running at full speed when YouTube is in the background." = "YouTube arka plandayken indirmelerin tam hızda devam etmesini sağlar.";
+
