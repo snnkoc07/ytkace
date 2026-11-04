@@ -1075,3 +1075,14 @@ Licensed under CC BY-NC-SA 4.0.";
 "Still show Shorts on the Home feed when shelves are removed." = "Still show Shorts on the Home feed when shelves are removed.";
 "Still show Shorts in search results when shelves are removed." = "Still show Shorts in search results when shelves are removed.";
 "Still show Shorts on channel pages when shelves are removed." = "Still show Shorts on channel pages when shelves are removed.";
+"Paused" = "Paused";
+"Queued" = "Queued";
+"Pause All" = "Pause All";
+"Resume All" = "Resume All";
+"Concurrent Downloads" = "Concurrent Downloads";
+"Maximum number of downloads running at the same time." = "Maximum number of downloads running at the same time.";
+"Connections per Download (IDM)" = "Connections per Download (IDM)";
+"Splits direct downloads into parallel chunks for faster speed." = "Splits direct downloads into parallel chunks for faster speed.";
+"Background Downloading" = "Background Downloading";
+"Keep downloads running at full speed when YouTube is in the background." = "Keep downloads running at full speed when YouTube is in the background.";
+
