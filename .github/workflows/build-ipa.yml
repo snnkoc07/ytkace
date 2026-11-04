@@ -14,10 +14,54 @@ permissions:
 
 jobs:
   build:
-    uses: ./.github/workflows/build-deb.yml
+    runs-on: ubuntu-latest
+    env:
+      THEOS: ${{ github.workspace }}/.theos
+      CI: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Test
+        run: python3 -m unittest discover -s Tests -v
+
+      - name: Cache Theos
+        id: cache-theos
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.theos
+          key: roothide-theos-${{ runner.os }}-v1
+
+      - name: Setup
+        if: steps.cache-theos.outputs.cache-hit != 'true'
+        run: bash -c "$(curl -fsSL https://raw.githubusercontent.com/roothide/theos/master/bin/install-theos)"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build
+        run: |
+          make clean
+          make package FINALPACKAGE=1 \
+            THEOS_PACKAGE_SCHEME="rootless" \
+            DISABLE_ROOTLESS_COMPAT_WARNING=1
+
+      - name: Name package
+        id: name
+        run: |
+          deb="$(ls packages/*.deb | head -1)"
+          version="$(awk '/^Version:/ {print $2}' control)"
+          output="com.itzzace.ytkace_${version}_rootless.deb"
+          mkdir -p artifacts
+          cp "$deb" "artifacts/$output"
+          echo "deb=artifacts/$output" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: YTKACE-deb-rootless
+          path: ${{ steps.name.outputs.deb }}
+          if-no-files-found: error
 
   package:
-    needs: [build]
+    needs: build
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
