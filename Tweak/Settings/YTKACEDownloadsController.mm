@@ -324,8 +324,13 @@ static void YTKACESaveVideoToPhotos(NSURL *url) {
 @property(nonatomic, assign) double progress;
 @property(nonatomic, strong) UILabel *titleLabel;
 @property(nonatomic, strong) UILabel *statusLabel;
+@property(nonatomic, strong) UIButton *pauseButton;
+@property(nonatomic, strong) UIButton *upButton;
+@property(nonatomic, strong) UIButton *downButton;
 @property(nonatomic, strong) UIButton *retryButton;
 @property(nonatomic, strong) UIButton *closeButton;
+@property(nonatomic, assign) BOOL canMoveUp;
+@property(nonatomic, assign) BOOL canMoveDown;
 @end
 
 @implementation YTKACEDownloadJobRow
@@ -367,6 +372,18 @@ static void YTKACESaveVideoToPhotos(NSURL *url) {
         self.statusLabel.adjustsFontSizeToFitWidth = YES;
         self.statusLabel.minimumScaleFactor = 0.8;
         [self.cardView addSubview:self.statusLabel];
+        self.pauseButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [self.pauseButton setImage:[UIImage systemImageNamed:@"pause.fill"] forState:UIControlStateNormal];
+        [self.pauseButton addTarget:self action:@selector(pauseTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self.cardView addSubview:self.pauseButton];
+        self.upButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [self.upButton setImage:[UIImage systemImageNamed:@"chevron.up"] forState:UIControlStateNormal];
+        [self.upButton addTarget:self action:@selector(upTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self.cardView addSubview:self.upButton];
+        self.downButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [self.downButton setImage:[UIImage systemImageNamed:@"chevron.down"] forState:UIControlStateNormal];
+        [self.downButton addTarget:self action:@selector(downTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self.cardView addSubview:self.downButton];
         self.retryButton = [UIButton buttonWithType:UIButtonTypeSystem];
         [self.retryButton setImage:[UIImage systemImageNamed:@"arrow.clockwise"] forState:UIControlStateNormal];
         [self.retryButton addTarget:self action:@selector(retryTapped) forControlEvents:UIControlEventTouchUpInside];
@@ -391,18 +408,36 @@ static void YTKACESaveVideoToPhotos(NSURL *url) {
     self.failedIcon.frame = CGRectMake((thumbWidth - 28.0) * 0.5, (cardHeight - 28.0) * 0.5, 28.0, 28.0);
     self.trackView.frame = CGRectMake(0.0, cardHeight - 3.0, thumbWidth, 3.0);
     self.fillView.frame = CGRectMake(0.0, 0.0, thumbWidth * self.progress, 3.0);
-    CGFloat buttons = self.retryButton.hidden ? 36.0 : 70.0;
-    self.closeButton.frame = CGRectMake(cardWidth - 36.0, (cardHeight - 32.0) * 0.5, 32.0, 32.0);
-    self.retryButton.frame = CGRectMake(cardWidth - 70.0, (cardHeight - 32.0) * 0.5, 32.0, 32.0);
-    CGFloat textX = thumbWidth + 12.0;
-    CGFloat textWidth = MAX(0.0, cardWidth - textX - buttons - 6.0);
+    CGFloat rightCursor = cardWidth;
+    rightCursor -= 30.0;
+    self.closeButton.frame = CGRectMake(rightCursor, (cardHeight - 30.0) * 0.5, 28.0, 30.0);
+    if (!self.retryButton.hidden) {
+        rightCursor -= 30.0;
+        self.retryButton.frame = CGRectMake(rightCursor, (cardHeight - 30.0) * 0.5, 28.0, 30.0);
+    }
+    if (!self.downButton.hidden) {
+        rightCursor -= 26.0;
+        self.downButton.frame = CGRectMake(rightCursor, (cardHeight - 30.0) * 0.5, 24.0, 30.0);
+    }
+    if (!self.upButton.hidden) {
+        rightCursor -= 26.0;
+        self.upButton.frame = CGRectMake(rightCursor, (cardHeight - 30.0) * 0.5, 24.0, 30.0);
+    }
+    if (!self.pauseButton.hidden) {
+        rightCursor -= 30.0;
+        self.pauseButton.frame = CGRectMake(rightCursor, (cardHeight - 30.0) * 0.5, 28.0, 30.0);
+    }
+    CGFloat textX = thumbWidth + 10.0;
+    CGFloat textWidth = MAX(0.0, rightCursor - textX - 4.0);
     self.titleLabel.frame = CGRectMake(textX, 2.0, textWidth, 38.0);
     self.statusLabel.frame = CGRectMake(textX, 42.0, textWidth, 18.0);
 }
 
-- (void)applyJob:(NSDictionary *)job {
+- (void)applyJob:(NSDictionary *)job index:(NSUInteger)index total:(NSUInteger)totalCount {
     self.identifier = job[@"identifier"];
     BOOL failed = [job[@"failed"] boolValue];
+    BOOL paused = [job[@"paused"] boolValue];
+    BOOL queued = [job[@"queued"] boolValue];
     self.cardView.backgroundColor = UIColor.clearColor;
     self.thumbnailView.backgroundColor = YTKACEInterfaceSurfaceColor(self.traitCollection);
     self.titleLabel.text = job[@"title"];
@@ -415,26 +450,62 @@ static void YTKACESaveVideoToPhotos(NSURL *url) {
     self.percentLabel.hidden = failed;
     self.failedIcon.hidden = !failed;
     self.dimView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:failed ? 0.6 : 0.45];
-    self.fillView.backgroundColor = failed ? UIColor.systemRedColor : YTKACEAccentColor();
+    self.fillView.backgroundColor = failed ? UIColor.systemRedColor : (paused ? UIColor.systemOrangeColor : YTKACEAccentColor());
     NSString *status = job[@"stage"];
+    if (paused) status = YTKACELocalized(@"Paused");
+    else if (queued) status = YTKACELocalized(@"Queued");
     if (failed) {
         NSString *detail = job[@"detail"];
         if (detail.length != 0) status = [NSString stringWithFormat:@"%@ · %@", status, detail];
     } else {
         int64_t done = [job[@"downloadedBytes"] longLongValue];
         int64_t total = [job[@"totalBytes"] longLongValue];
+        double speed = [job[@"speed"] doubleValue];
         if (done > 0 && total > 0) {
             status = [NSString stringWithFormat:@"%@ · %@ / %@", status,
                 [NSByteCountFormatter stringFromByteCount:done countStyle:NSByteCountFormatterCountStyleFile],
                 [NSByteCountFormatter stringFromByteCount:total countStyle:NSByteCountFormatterCountStyleFile]];
         }
+        if (!paused && !queued && speed > 1024.0) {
+            status = [NSString stringWithFormat:@"%@ · %@/s", status,
+                [NSByteCountFormatter stringFromByteCount:(long long)speed countStyle:NSByteCountFormatterCountStyleFile]];
+        }
     }
     self.statusLabel.text = status;
     self.statusLabel.textColor = failed ? UIColor.systemRedColor : UIColor.secondaryLabelColor;
     self.retryButton.tintColor = UIColor.labelColor;
+    self.pauseButton.tintColor = UIColor.labelColor;
+    self.upButton.tintColor = UIColor.secondaryLabelColor;
+    self.downButton.tintColor = UIColor.secondaryLabelColor;
     self.closeButton.tintColor = UIColor.secondaryLabelColor;
     self.retryButton.hidden = !failed;
+    NSString *stage = job[@"stage"] ?: @"";
+    BOOL terminal = [stage isEqualToString:YTKACELocalized(@"Merging")] ||
+        [stage isEqualToString:YTKACELocalized(@"Finalizing")] ||
+        [stage isEqualToString:YTKACELocalized(@"Complete")] ||
+        [stage isEqualToString:YTKACELocalized(@"Cancelled")];
+    self.pauseButton.hidden = failed || terminal;
+    if (!self.pauseButton.hidden) {
+        [self.pauseButton setImage:[UIImage systemImageNamed:paused ? @"play.fill" : @"pause.fill"]
+                          forState:UIControlStateNormal];
+    }
+    self.upButton.hidden = failed || totalCount < 2;
+    self.downButton.hidden = failed || totalCount < 2;
+    self.upButton.enabled = index > 0;
+    self.downButton.enabled = index + 1 < totalCount;
     [self setNeedsLayout];
+}
+
+- (void)pauseTapped {
+    if (self.identifier.length != 0) [YTKACEDownloadProgressView.sharedView togglePauseJob:self.identifier];
+}
+
+- (void)upTapped {
+    if (self.identifier.length != 0) [YTKACEDownloadProgressView.sharedView moveJob:self.identifier delta:-1];
+}
+
+- (void)downTapped {
+    if (self.identifier.length != 0) [YTKACEDownloadProgressView.sharedView moveJob:self.identifier delta:1];
 }
 
 - (void)retryTapped {
@@ -448,6 +519,8 @@ static void YTKACESaveVideoToPhotos(NSURL *url) {
 
 @interface YTKACEDownloadJobsHeader : UICollectionReusableView
 @property(nonatomic, strong) UILabel *headerLabel;
+@property(nonatomic, strong) UIButton *pauseAllButton;
+@property(nonatomic, strong) UIButton *resumeAllButton;
 @property(nonatomic, strong) NSMutableArray<YTKACEDownloadJobRow *> *rows;
 - (void)applyJobs:(NSArray<NSDictionary *> *)jobs;
 @end
@@ -463,8 +536,28 @@ static void YTKACESaveVideoToPhotos(NSURL *url) {
         self.headerLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
         self.headerLabel.textColor = UIColor.secondaryLabelColor;
         [self addSubview:self.headerLabel];
+
+        self.pauseAllButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [self.pauseAllButton setTitle:YTKACELocalized(@"Pause All") forState:UIControlStateNormal];
+        self.pauseAllButton.titleLabel.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
+        [self.pauseAllButton addTarget:self action:@selector(pauseAllTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:self.pauseAllButton];
+
+        self.resumeAllButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [self.resumeAllButton setTitle:YTKACELocalized(@"Resume All") forState:UIControlStateNormal];
+        self.resumeAllButton.titleLabel.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
+        [self.resumeAllButton addTarget:self action:@selector(resumeAllTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:self.resumeAllButton];
     }
     return self;
+}
+
+- (void)pauseAllTapped {
+    [YTKACEDownloadCoordinator.sharedCoordinator pauseAllJobs];
+}
+
+- (void)resumeAllTapped {
+    [YTKACEDownloadCoordinator.sharedCoordinator resumeAllJobs];
 }
 
 - (void)applyJobs:(NSArray<NSDictionary *> *)jobs {
@@ -477,14 +570,22 @@ static void YTKACESaveVideoToPhotos(NSURL *url) {
         [self.rows.lastObject removeFromSuperview];
         [self.rows removeLastObject];
     }
-    for (NSUInteger index = 0; index < jobs.count; index++) [self.rows[index] applyJob:jobs[index]];
+    for (NSUInteger index = 0; index < jobs.count; index++) {
+        [self.rows[index] applyJob:jobs[index] index:index total:jobs.count];
+    }
     [self setNeedsLayout];
 }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat width = CGRectGetWidth(self.bounds);
-    self.headerLabel.frame = CGRectMake(18.0, 6.0, width - 36.0, 20.0);
+    [self.resumeAllButton sizeToFit];
+    [self.pauseAllButton sizeToFit];
+    CGFloat resumeW = CGRectGetWidth(self.resumeAllButton.bounds) + 8.0;
+    CGFloat pauseW = CGRectGetWidth(self.pauseAllButton.bounds) + 8.0;
+    self.resumeAllButton.frame = CGRectMake(width - 14.0 - resumeW, 2.0, resumeW, 24.0);
+    self.pauseAllButton.frame = CGRectMake(CGRectGetMinX(self.resumeAllButton.frame) - 8.0 - pauseW, 2.0, pauseW, 24.0);
+    self.headerLabel.frame = CGRectMake(18.0, 6.0, MAX(60.0, CGRectGetMinX(self.pauseAllButton.frame) - 24.0), 20.0);
     for (NSUInteger index = 0; index < self.rows.count; index++) {
         self.rows[index].frame = CGRectMake(0.0, 28.0 + 92.0 * index, width, 92.0);
     }

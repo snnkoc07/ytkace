@@ -1973,7 +1973,18 @@ static NSDictionary *YTKACEDownloadsDefinition(void) {
             YTKACEPickerDetail(@"Download Method",
                 @"SABR is the default. Use TV Client or Direct if downloads fail.",
                 @"YTKACE.Preference.Downloads.Method",
-                @[@"SABR", @"TV Client", @"Direct"], @[@0, @2, @1], 0)
+                @[@"SABR", @"TV Client", @"Direct"], @[@0, @2, @1], 0),
+            YTKACEPickerDetail(@"Concurrent Downloads",
+                @"Maximum number of downloads running at the same time.",
+                @"YTKACE.Preference.Downloads.MaxConcurrent",
+                @[@"1", @"2", @"3", @"4", @"5"], @[@1, @2, @3, @4, @5], 1),
+            YTKACEPickerDetail(@"Connections per Download (IDM)",
+                @"Splits direct downloads into parallel chunks for faster speed.",
+                @"YTKACE.Preference.Downloads.Connections",
+                @[@"1", @"2", @"4", @"8"], @[@1, @2, @4, @8], 2),
+            YTKACEToggleDetail(@"Background Downloading",
+                @"Keep downloads running at full speed when YouTube is in the background.",
+                @"YTKACE.Preference.Downloads.BackgroundKeepAlive")
         ],
         @[
             YTKACEActionDetail(@"Back Up", @"Save settings and media to a ZIP file.", backup),
