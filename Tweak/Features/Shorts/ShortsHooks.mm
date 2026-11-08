@@ -878,6 +878,7 @@ static void YTKACEShortsControllerLayout(UIViewController *receiver,
                                          SEL selector) {
     YTKACEInvokeShortsOriginal(receiver, selector);
     YTKACEConfigureReelView(receiver.view, YES);
+    YTKACEVideoActivated(receiver);
     if (![objc_getAssociatedObject(receiver,
             YTKACEShortsInitialRefreshAssociation) boolValue]) {
         objc_setAssociatedObject(receiver,

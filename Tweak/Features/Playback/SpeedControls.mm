@@ -286,16 +286,26 @@ static UIImage *YTKACESpeedButtonImage(BOOL plus) {
 
 - (BOOL)primeStartRateForSource:(id)source {
     NSString *identifier = [self identifierForSource:source];
-    if (identifier.length == 0) return NO;
-    if ([self.primedVideo isEqualToString:identifier]) return NO;
-    self.primedVideo = identifier;
+    if (identifier.length != 0 && [self.primedVideo isEqualToString:identifier]) {
+        return NO;
+    }
 
     const double target = YTKACESourceUsesShortsRate(source)
         ? YTKACEShortsRate() : YTKACEStartPlaybackRate();
     if (!YTKACERateIsUsable(target)) return NO;
-    const double playing = [self rateFromObject:source depth:0];
-    if (fabs(playing - target) < 0.01) return NO;
 
+    const double playing = [self rateFromObject:source depth:0];
+    if (fabs(playing - target) < 0.01) {
+        if (identifier.length != 0) {
+            self.primedVideo = identifier;
+        }
+        return NO;
+    }
+
+    if (identifier.length != 0) {
+        self.primedVideo = identifier;
+    }
+    self.rateSource = source;
     [self setRate:target];
     return YES;
 }
@@ -450,6 +460,24 @@ static UIImage *YTKACESpeedButtonImage(BOOL plus) {
 }
 
 @end
+
+void YTKACEVideoActivated(id player) {
+    if (player == nil) return;
+    YTKACESpeedCoordinator *coordinator = [YTKACESpeedCoordinator sharedCoordinator];
+    coordinator.rateSource = player;
+    [coordinator primeStartRateForSource:player];
+
+    __weak id weakPlayer = player;
+    for (NSNumber *delay in @[@0.15, @0.4, @0.8]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            id target = weakPlayer;
+            if (target != nil) {
+                [[YTKACESpeedCoordinator sharedCoordinator] primeStartRateForSource:target];
+            }
+        });
+    }
+}
 
 static IMP YTKACEMaximumOriginal(id receiver, SEL selector) {
     NSString *key = [NSString stringWithFormat:@"%@|%@",

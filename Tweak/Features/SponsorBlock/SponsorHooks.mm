@@ -46,7 +46,9 @@ static void YTKACERefreshPlaybackTimePreferenceState(void) {
         YTKACEFeatureEnabled(@"autoSkipShorts") ||
         YTKACEFeatureEnabled(YTKACESpeedKey) ||
         YTKACEFeatureEnabled(YTKACESleepTimerKey) ||
-        YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.LocalQueue");
+        YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.LocalQueue") ||
+        YTKACEStartPlaybackRate() != 1.0 ||
+        [NSUserDefaults.standardUserDefaults doubleForKey:@"YTKACE.Preference.Shorts.PlaybackRate"] > 0.0;
 }
 
 static void YTKACEPublishPlaybackTime(id receiver, double time) {
@@ -535,6 +537,7 @@ static void YTKACEDidActivateVideo(id receiver,
     }
 
     YTKACEOpenPausedVideoActivated(receiver);
+    YTKACEVideoActivated(receiver);
     YTKACELastPlayerController = receiver;
 
     if (!YTKACESponsorBlockEnabled()) {

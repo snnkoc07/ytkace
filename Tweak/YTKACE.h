@@ -39,6 +39,7 @@ void YTKACEInstallLinkCleaningHooks(void);
 void YTKACEInstallHapticHooks(void);
 void YTKACEInstallAutoplayHooks(void);
 void YTKACEOpenPausedVideoActivated(id player);
+void YTKACEVideoActivated(id player);
 void YTKACEInstallCaptionHooks(void);
 void YTKACEInstallTranscriptHooks(void);
 NSArray<NSDictionary *> *_Nullable YTKACEParseCaptionCues(NSData *data);
